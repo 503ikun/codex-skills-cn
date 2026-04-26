@@ -1,0 +1,4 @@
+interface:
+  display_name: "知识星球（网页信息采集器）"
+  short_description: "采集知识星球和网页内容到 Markdown，支持滚动、翻页和图片保留。"
+  default_prompt: "Use $zhishi-xingqiu-web-collector to capture the current Knowledge Planet or browser page into a new Markdown file with images, scrolling, and pagination."

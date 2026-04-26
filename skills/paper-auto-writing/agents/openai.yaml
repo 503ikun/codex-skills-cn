@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "论文自动写作"
+  short_description: "优先用 Codex 订阅会话代跑论文写作，必要时再切到 AI-Scientist-v2 仓库流程"
+  default_prompt: "Use $paper-auto-writing to act as my subscription-session paper writer for this research topic."

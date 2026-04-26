@@ -1,0 +1,4 @@
+interface:
+  display_name: "OMX Agent集群"
+  short_description: "安装、使用和排查 OMX 工作流。"
+  default_prompt: "使用 OMX 助手来说明 oh-my-codex 的安装、适配性、工作流和排错方式。"

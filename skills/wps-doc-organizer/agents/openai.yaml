@@ -1,0 +1,4 @@
+interface:
+  display_name: "WPS 文档整理"
+  short_description: "按指定日期范围和自定义分类目录整理 WPS 云文档"
+  default_prompt: "使用 $wps-doc-organizer 按指定日期范围和分类目录扫描 WPS 云文档，生成 dry-run 清单；确认后再复制归档，不删除原文件。"

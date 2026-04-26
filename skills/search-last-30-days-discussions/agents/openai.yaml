@@ -1,0 +1,4 @@
+interface:
+  display_name: "一句话搜遍全网最近 30 天的讨论"
+  short_description: "跨平台搜索近 30 天真实讨论、热度信号与结构化中文总结"
+  default_prompt: "Use $search-last-30-days-discussions to 搜索某个主题最近 30 天的全网讨论，优先综合 Reddit、X、YouTube、Hacker News、GitHub、Polymarket 和网页信号，并输出结构化中文总结。"

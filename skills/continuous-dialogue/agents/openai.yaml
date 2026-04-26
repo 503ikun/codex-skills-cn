@@ -1,0 +1,4 @@
+interface:
+  display_name: "Continuous Dialogue"
+  short_description: "Multi-round browser or Chrome ChatGPT dialogue with structured Markdown capture"
+  default_prompt: "Use $continuous-dialogue to run a coherent round-by-round browser conversation, especially in Chrome or ChatGPT web, capture every reply outside the browser, and return the result as a structured Markdown deliverable."

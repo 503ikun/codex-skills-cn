@@ -1,0 +1,4 @@
+interface:
+  display_name: "任意文件转 Markdown"
+  short_description: "把常见文件转换成 Markdown，适合 Obsidian、LLM 输入和知识库整理"
+  default_prompt: "Use $convert-anything-to-markdown to convert this local file into Markdown and save the output next to the source file."
