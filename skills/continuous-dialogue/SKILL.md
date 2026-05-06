@@ -58,6 +58,29 @@ Required posture:
 - Validate one round end to end before attempting a longer run.
 - Capture each round outside the browser immediately.
 
+### WeChat Multi-Article Single Dialogue
+
+Use this mode when `wechat-query` hands off a batch of WeChat public-account articles for Obsidian archival analysis.
+
+Defaults:
+
+- Use one normal, non-temporary ChatGPT conversation for the whole batch.
+- Do not delete the final conversation.
+- Send a master prompt first, then one article prompt at a time.
+- Ask targeted questions based on each article's actual content, not a generic template.
+- Require long Chinese outputs that connect the article to the user's Obsidian, AI workflow, formal organization/procurement/risk-control work, investment judgment, and personal decision frameworks.
+- From the second article onward, ask ChatGPT to explicitly connect the current article with earlier articles in the same dialogue.
+- Save every reply immediately as an external checkpoint before sending the next article.
+- If the copied reply does not match the current article title or marker, retry after re-anchoring; if it still fails and the calling workflow says `skip`, record the failed article and continue.
+
+The preferred runner for this combined workflow is:
+
+```powershell
+& "$env:USERPROFILE\.codex\skills\wechat-query\scripts\run_obsidian_chatgpt_archive.ps1"
+```
+
+The runner writes `conversation-checkpoints-v2.jsonl`, `运行摘要-v2.md`, and theme-grouped Markdown files into the target Obsidian date folder.
+
 ### Fallback A: Same Surface, Slower Pace
 
 Use this path when the browser is usable but unstable.

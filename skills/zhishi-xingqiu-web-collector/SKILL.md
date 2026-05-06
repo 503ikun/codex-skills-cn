@@ -1,6 +1,6 @@
 ---
 name: zhishi-xingqiu-web-collector
-description: Capture Knowledge Planet (知识星球) and browser-visible web content into a new Markdown file, including text, images, automatic scrolling, best-effort pagination, de-duplication, and Markdown assembly. Use when Codex needs to save Knowledge Planet posts, web articles, feeds, list pages, or browser-visible content into a user-specified folder as a single Markdown note with linked image assets.
+description: Capture Knowledge Planet (知识星球), Xiaoetong (小鹅通), paid columns, member courses, browser-visible web content, and logged-in Chrome/CDP/API-visible content into Markdown, including text, images, scrolling, pagination, de-duplication, and Markdown assembly. Use when Codex needs to save Knowledge Planet posts, Xiaoetong articles/courses, paid-course member bundles, web articles, feeds, list pages, or browser-visible content into a user-specified folder as Markdown notes with linked assets.
 ---
 
 # 知识星球（网页信息采集器）
@@ -10,6 +10,27 @@ Use this skill to turn Knowledge Planet or other browser-visible web content int
 This skill is optimized for browser capture workflows such as Knowledge Planet pages, article pages, feeds, knowledge platforms, paginated lists, and long scrolling pages. It is not the default skill for desktop-wide OCR or arbitrary native applications.
 
 Also use this skill for Knowledge Planet file-area/PDF tasks when the user asks to collect PDFs, paid-article backups, or all group-visible content into one Markdown note. In that mode, combine the browser capture workflow with the PDF download, Markdown conversion, OCR fallback, and classified summary workflow described below.
+
+Also use this skill for Xiaoetong paid columns, paid courses, member products, "我的已购" pages, and long course catalogs when the user is already logged in and asks to back up or organize content they can normally view. Prefer the logged-in Chrome + CDP/API workflow when UI scrolling/copying is slow, when returning from an item refreshes the catalog, or when a paid member product contains many nested columns/courses.
+
+## High-Speed Paid Course/CDP Path
+
+Use this path before long UI automation when the page is Xiaoetong, a paid column, a course catalog, a member product, or any browser-visible paid knowledge platform with many items.
+
+1. Safety boundary.
+   Use only the current logged-in browser session and content the account can normally see. Do not bypass login, payment, CAPTCHA, rate limits, or permission checks. Do not scan broad browser history/cache.
+2. Baseline and entitlement check.
+   Capture the visible page URL, title, body text, screenshot, and Network sample. If the catalog tab is empty but the user owns the product, inspect "我的已购" and learning-record APIs before assuming no content exists.
+3. Choose the fastest supported route.
+   Prefer page-context `fetch(..., { credentials: "include" })` over mouse copying. For linear paid article columns, use detail plus previous/next APIs. For member products/course bundles, build a resource tree from member-column/single/course APIs, then fetch each detail.
+4. Save incrementally.
+   Write raw JSON and progress JSONL after every batch. Resume from existing raw records instead of restarting.
+5. Build the final Markdown.
+   For company/article research, use company/industry builders. For courses/member bundles, use one themed folder, a master index, and one Markdown per parent course/column; sort lessons old-to-new.
+6. Stop debugging Chrome.
+   When paused or complete, explicitly stop only the Chrome process launched with `--remote-debugging-port=9222`.
+
+For the full decision tree and Xiaoetong API hints, read [references/cdp-paid-course-workflow.md](references/cdp-paid-course-workflow.md).
 
 ## Core Workflow
 
@@ -195,7 +216,10 @@ After editing this skill:
 3. Run `python scripts/capture_zsxq_pdfs.py --help`
 4. Run `python scripts/convert_pdfs_with_ocr.py --help`
 5. Run `python scripts/build_zsxq_pdf_summary.py --help`
-6. Run `python C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\quick_validate.py <skill-dir>`
+6. Run `python scripts/capture_paid_course_cdp.py --help`
+7. Run `python scripts/build_company_article_markdown.py --help`
+8. Run `python scripts/build_paid_course_markdown.py --help`
+9. Run `python C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\quick_validate.py <skill-dir>`
 
 For browser-specific operating details and field semantics, read [references/browser-capture-workflow.md](references/browser-capture-workflow.md).
 For Knowledge Planet file-area/PDF operating details, read [references/knowledge-planet-pdf-workflow.md](references/knowledge-planet-pdf-workflow.md).

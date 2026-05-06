@@ -32,6 +32,7 @@ https://github.com/503ikun/codex-skills-cn
 | `paper-auto-writing` | 论文自动写作和 AI-Scientist-v2 风格流程。 | 适合研究选题、论文大纲、文献综合、草稿写作、评审式修改、运行计划生成和实验日志/PDF 总结。 |
 | `playwright-interactive` | 持久化 Playwright 浏览器与 Electron 调试。 | 适合本地 Web 应用、Electron 应用的交互式调试、视觉检查、功能 QA 和截图验证。 |
 | `search-last-30-days-discussions` | 跨平台搜索最近 30 天真实讨论。 | 适合研究人物、公司、产品、事件、竞品对比、舆情、社区反馈和趋势判断，综合 Reddit、X、YouTube、Hacker News、GitHub、Polymarket 和网页信号。 |
+| `wechat-query` | 微信公众号文章订阅、查询与推送。 | 适合部署微信公众号文章缓存服务、扫码登录、订阅公众号、查询缓存文章、抓取单篇文章全文，以及配置每日巡检和文章汇总推送。 |
 | `wps-doc-organizer` | WPS / 金山文档云端整理。 | 适合按日期范围扫描 WPS 云文档，按业务目录分类，生成 dry-run 清单，并在确认后复制归档，不删除原文件。 |
 | `zhishi-xingqiu-web-collector` | 知识星球和网页内容采集到 Markdown。 | 适合采集知识星球帖子、文件区、网页文章、列表页和长滚动页面，保留正文、图片、截图、翻页和去重后的 Markdown。 |
 
@@ -48,6 +49,7 @@ codex-skills-cn/
     paper-auto-writing/
     playwright-interactive/
     search-last-30-days-discussions/
+    wechat-query/
     wps-doc-organizer/
     zhishi-xingqiu-web-collector/
 ```
@@ -56,4 +58,6 @@ codex-skills-cn/
 
 发布和复用 skills 时，不要提交真实的 API Key、cookie、Authorization header、访问令牌、账号密码、私人文档或其他敏感信息。
 
-本仓库中的脚本和说明可能会提到环境变量名或占位符，例如 `OPENAI_API_KEY`、`S2_API_KEY`、`<Cookie header>`。这些只是使用说明，不应替换成真实密钥后提交。
+本仓库中的脚本和说明可能会提到环境变量名或占位符，例如 `OPENAI_API_KEY`、`S2_API_KEY`、`WECHAT_COOKIE`、`<Cookie header>`。这些只是使用说明，不应替换成真实密钥后提交。
+
+`wechat-query` 只发布源码、说明和模板，不包含本地 `.env`、登录 cookie、SQLite 数据库、日志、虚拟环境或动态二维码。

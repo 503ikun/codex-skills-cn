@@ -1,0 +1,31 @@
+# Secrets and local credentials
+.env
+**/.env
+.env.local
+**/.env.local
+
+# Runtime state
+*.log
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
+
+# Python and dependency environments
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+ENV/
+node_modules/
+
+# Build and cache output
+dist/
+build/
+.cache/
+
+# Dynamic WeChat login QR codes
+skills/wechat-query/services/wechat-download-api/static/qrcodes/*
+!skills/wechat-query/services/wechat-download-api/static/qrcodes/.gitkeep

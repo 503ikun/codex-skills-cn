@@ -8,6 +8,7 @@ param(
     [string]$UrlHint,
     [string]$TabHint,
     [string]$Text,
+    [string]$TextFile,
     [string]$Name,
     [int]$Count = 40,
     [int]$TimeoutSec = 120
@@ -19,6 +20,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -39,9 +41,11 @@ function New-UiText {
 $UiInputName = New-UiText @(19982,32,67,104,97,116,71,80,84,32,32842,22825)
 $UiSendButton = New-UiText @(21457,36865,25552,31034)
 $UiCopyReply = New-UiText @(22797,21046,22238,22797)
+$UiReplyOps = New-UiText @(22238,22797,25805,20316)
 $UiModelSwitch = New-UiText @(20999,25442,27169,22411)
 $UiModelSelector = New-UiText @(27169,22411,36873,25321,22120)
 $UiStopStreaming = New-UiText @(20572,27490,27969,24335,20256,36755)
+$UiStopResponse = New-UiText @(20572,27490,22238,31572)
 
 function New-Result {
     param([hashtable]$Data)
@@ -75,9 +79,39 @@ function Get-TargetWindow {
         throw "No Chrome window matched TitleLike '$TitleLike'."
     }
 
-    $best = $candidates |
+    $ranked = @($candidates |
         Sort-Object @{Expression = { Get-WindowScore -Process $_ }; Descending = $true }, Id |
-        Select-Object -First 1
+        ForEach-Object { $_ })
+
+    foreach ($candidate in $ranked) {
+        $candidateWindow = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$candidate.MainWindowHandle)
+        $candidateLooksLikeChatGPT = ($candidate.MainWindowTitle -like '*ChatGPT*' -or ($TabHint -and $candidate.MainWindowTitle -like "*$TabHint*"))
+
+        if ($candidateWindow -and -not $candidateLooksLikeChatGPT) {
+            Select-ChatGPTTab -Window $candidateWindow -Process $candidate | Out-Null
+            $candidateWindow = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$candidate.MainWindowHandle)
+            $candidateLooksLikeChatGPT = ($candidate.MainWindowTitle -like '*ChatGPT*' -or ($TabHint -and $candidate.MainWindowTitle -like "*$TabHint*"))
+        }
+
+        if ($candidateWindow -and $candidateLooksLikeChatGPT -and (Get-InputElement -Window $candidateWindow)) {
+            return [pscustomobject]@{
+                Process = $candidate
+                Window = $candidateWindow
+            }
+        }
+
+        if ($candidateWindow -and (Select-ChatGPTTab -Window $candidateWindow -Process $candidate)) {
+            $candidateWindow = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$candidate.MainWindowHandle)
+            if ($candidateWindow -and (Get-InputElement -Window $candidateWindow)) {
+                return [pscustomobject]@{
+                    Process = $candidate
+                    Window = $candidateWindow
+                }
+            }
+        }
+    }
+
+    $best = $ranked | Select-Object -First 1
 
     $window = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$best.MainWindowHandle)
     if (-not $window) {
@@ -95,6 +129,23 @@ function Get-AllDescendants {
     ,($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition))
 }
 
+function Get-UiaPropertyValue {
+    param(
+        $Element,
+        $Property,
+        $Default = $null
+    )
+
+    try {
+        $value = $Element.GetCurrentPropertyValue($Property, $true)
+        if ($value -eq [System.Windows.Automation.AutomationElement]::NotSupported) { return $Default }
+        if ($null -eq $value) { return $Default }
+        return $value
+    } catch {
+        return $Default
+    }
+}
+
 function Get-ElementInfo {
     param(
         $Element,
@@ -102,6 +153,20 @@ function Get-ElementInfo {
     )
 
     $rect = $Element.Current.BoundingRectangle
+    $elementName = Get-UiaPropertyValue -Element $Element -Property ([System.Windows.Automation.AutomationElement]::NameProperty) -Default ''
+    $controlType = Get-UiaPropertyValue -Element $Element -Property ([System.Windows.Automation.AutomationElement]::ControlTypeProperty) -Default $null
+    $controlTypeName = 'Unknown'
+    if ($controlType) {
+        try {
+            if ($controlType.ProgrammaticName) {
+                $controlTypeName = $controlType.ProgrammaticName.Replace('ControlType.','')
+            } else {
+                $controlTypeName = $controlType.ToString().Replace('ControlType.','')
+            }
+        } catch {
+            $controlTypeName = $controlType.ToString().Replace('ControlType.','')
+        }
+    }
     function Convert-BoundInt {
         param($Value)
         if ($null -eq $Value) { return 0 }
@@ -113,12 +178,12 @@ function Get-ElementInfo {
     }
     [pscustomobject]@{
         index = $Index
-        name = $Element.Current.Name
-        type = if ($Element.Current.ControlType -and $Element.Current.ControlType.ProgrammaticName) { $Element.Current.ControlType.ProgrammaticName.Replace('ControlType.','') } else { 'Unknown' }
-        automation_id = $Element.Current.AutomationId
-        class_name = $Element.Current.ClassName
-        enabled = $Element.Current.IsEnabled
-        offscreen = $Element.Current.IsOffscreen
+        name = $elementName
+        type = $controlTypeName
+        automation_id = Get-UiaPropertyValue -Element $Element -Property ([System.Windows.Automation.AutomationElement]::AutomationIdProperty) -Default ''
+        class_name = Get-UiaPropertyValue -Element $Element -Property ([System.Windows.Automation.AutomationElement]::ClassNameProperty) -Default ''
+        enabled = Get-UiaPropertyValue -Element $Element -Property ([System.Windows.Automation.AutomationElement]::IsEnabledProperty) -Default $false
+        offscreen = Get-UiaPropertyValue -Element $Element -Property ([System.Windows.Automation.AutomationElement]::IsOffscreenProperty) -Default $true
         bounds = @{
             x = Convert-BoundInt $rect.X
             y = Convert-BoundInt $rect.Y
@@ -149,6 +214,32 @@ function Find-ElementsByNameAndType {
     ,($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
 }
 
+function Find-ElementsByNameAnyType {
+    param(
+        $Window,
+        [string]$ElementName
+    )
+
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty,
+        $ElementName
+    )
+    ,($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+}
+
+function Find-ElementsByAutomationId {
+    param(
+        $Window,
+        [string]$AutomationId
+    )
+
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+        $AutomationId
+    )
+    ,($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+}
+
 function Get-InputElement {
     param($Window)
     $edits = Find-ElementsByNameAndType -Window $Window -ElementName $UiInputName -ControlType ([System.Windows.Automation.ControlType]::Edit)
@@ -176,8 +267,93 @@ function Get-LatestButtonByName {
     )
 
     $buttons = Find-ElementsByNameAndType -Window $Window -ElementName $ButtonName -ControlType ([System.Windows.Automation.ControlType]::Button)
-    if ($buttons.Count -eq 0) { return $null }
-    $buttons.Item($buttons.Count - 1)
+    if ($buttons.Count -gt 0) { return $buttons.Item($buttons.Count - 1) }
+
+    $named = Find-ElementsByNameAnyType -Window $Window -ElementName $ButtonName
+    if ($named.Count -eq 0) { return $null }
+
+    for ($i = $named.Count - 1; $i -ge 0; $i--) {
+        $candidate = $named.Item($i)
+        try {
+            $rect = $candidate.Current.BoundingRectangle
+            if ($rect.Width -gt 0 -and $rect.Height -gt 0) { return $candidate }
+        } catch {
+        }
+    }
+    $named.Item($named.Count - 1)
+}
+
+function Get-ComposerSubmitButton {
+    param($Window)
+
+    $submitButtons = Find-ElementsByAutomationId -Window $Window -AutomationId 'composer-submit-button'
+    for ($i = $submitButtons.Count - 1; $i -ge 0; $i--) {
+        $candidate = $submitButtons.Item($i)
+        $name = Get-UiaPropertyValue -Element $candidate -Property ([System.Windows.Automation.AutomationElement]::NameProperty) -Default ''
+        if ($name -eq $UiStopStreaming -or $name -eq $UiStopResponse) { continue }
+        return $candidate
+    }
+
+    $names = @(
+        $UiSendButton,
+        (New-UiText @(21457,36865,28040,24687)),
+        'Send message',
+        'Send prompt'
+    )
+    foreach ($name in $names) {
+        $button = Get-LatestButtonByName -Window $Window -ButtonName $name
+        if ($button) { return $button }
+    }
+
+    $null
+}
+
+function Select-ChatGPTTab {
+    param(
+        $Window,
+        $Process
+    )
+
+    [CodexUser32]::SetForegroundWindow([IntPtr]$Process.MainWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 300
+
+    $tabs = Find-ElementsByNameAndType -Window $Window -ElementName 'ChatGPT' -ControlType ([System.Windows.Automation.ControlType]::TabItem)
+    if ($tabs.Count -eq 0) {
+        $allTabs = $Window.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::TabItem
+            ))
+        )
+        $matches = @()
+        for ($i = 0; $i -lt $allTabs.Count; $i++) {
+            $tab = $allTabs.Item($i)
+            $tabName = Get-UiaPropertyValue -Element $tab -Property ([System.Windows.Automation.AutomationElement]::NameProperty) -Default ''
+            if ($tabName -like '*ChatGPT*') { $matches += $tab }
+        }
+        $tabs = @($matches)
+    }
+    if ($tabs.Count -eq 0) { return $false }
+
+    if ($tabs -is [System.Array]) {
+        $tabToSelect = $tabs[$tabs.Count - 1]
+    } else {
+        $tabToSelect = $tabs.Item($tabs.Count - 1)
+    }
+    try {
+        $pattern = $null
+        if ($tabToSelect.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+            $pattern.Select()
+        } else {
+            Invoke-ElementNativeClick -Element $tabToSelect | Out-Null
+        }
+    } catch {
+        Invoke-ElementNativeClick -Element $tabToSelect | Out-Null
+    }
+
+    Start-Sleep -Seconds 3
+    $true
 }
 
 function Invoke-Element {
@@ -211,6 +387,18 @@ function Invoke-ElementNativeClick {
     'native-click'
 }
 
+function Invoke-InputKeyboardSend {
+    param($InputElement)
+    try {
+        $InputElement.SetFocus()
+        Start-Sleep -Milliseconds 200
+    } catch {
+    }
+    [System.Windows.Forms.SendKeys]::SendWait('^{ENTER}')
+    Start-Sleep -Seconds 1
+    'keyboard-ctrl-enter'
+}
+
 function Get-Tail {
     param(
         $Window,
@@ -221,7 +409,8 @@ function Get-Tail {
     $tail = New-Object System.Collections.Generic.List[object]
     for ($i = [Math]::Max(0, $all.Count - $TailCount); $i -lt $all.Count; $i++) {
         $element = $all.Item($i)
-        if ([string]::IsNullOrWhiteSpace($element.Current.Name)) { continue }
+        $elementName = Get-UiaPropertyValue -Element $element -Property ([System.Windows.Automation.AutomationElement]::NameProperty) -Default ''
+        if ([string]::IsNullOrWhiteSpace($elementName)) { continue }
         $tail.Add((Get-ElementInfo -Element $element -Index $i))
     }
     $tail
@@ -296,7 +485,7 @@ function Test-ChatGPTSurface {
     $tail = Get-Tail -Window $Window -TailCount 120
     $tailText = Get-TailText -Tail $tail
     $input = Get-InputElement -Window $Window
-    $send = Get-LatestButtonByName -Window $Window -ButtonName $UiSendButton
+    $send = Get-ComposerSubmitButton -Window $Window
     $copy = Get-LatestButtonByName -Window $Window -ButtonName $UiCopyReply
     $modelSwitch = Get-LatestButtonByName -Window $Window -ButtonName $UiModelSwitch
     if (-not $modelSwitch) {
@@ -336,22 +525,33 @@ function Get-InputValue {
 function Wait-ReplyComplete {
     param(
         $Window,
-        [int]$Seconds
+        [int]$Seconds,
+        [int]$MinCopyReplyCount = 1
     )
 
     $seenStreaming = $false
     $deadline = (Get-Date).AddSeconds($Seconds)
     $lastTail = ''
+    $stableTicks = 0
 
     do {
         $tail = Get-Tail -Window $Window -TailCount 120
         $tailText = Get-TailText -Tail $tail
-        $lastTail = $tailText
-        $hasStop = $tailText -match [regex]::Escape($UiStopStreaming)
-        $hasCopy = $tailText -match [regex]::Escape($UiCopyReply)
+        if ($tailText -eq $lastTail) {
+            $stableTicks += 1
+        } else {
+            $stableTicks = 0
+            $lastTail = $tailText
+        }
+        $hasStop = ($tailText -match [regex]::Escape($UiStopStreaming)) -or ($tailText -match [regex]::Escape($UiStopResponse))
+        $replyOpsCount = (Find-ElementsByNameAnyType -Window $Window -ElementName $UiReplyOps).Count
+        $copyCount = (Find-ElementsByNameAndType -Window $Window -ElementName $UiCopyReply -ControlType ([System.Windows.Automation.ControlType]::Button)).Count
+        $copyAnyCount = (Find-ElementsByNameAnyType -Window $Window -ElementName $UiCopyReply).Count
+        $hasNewReply = $replyOpsCount -ge $MinCopyReplyCount
+        $hasCopy = $hasNewReply -and (($copyCount -gt 0) -or ($copyAnyCount -gt 0) -or ($tailText -match [regex]::Escape($UiCopyReply)))
         if ($hasStop) { $seenStreaming = $true }
 
-        if ($seenStreaming -and -not $hasStop -and $hasCopy) {
+        if ($seenStreaming -and -not $hasStop -and ($hasCopy -or $stableTicks -ge 3)) {
             return [pscustomobject]@{
                 completed = $true
                 seen_streaming = $seenStreaming
@@ -359,7 +559,7 @@ function Wait-ReplyComplete {
             }
         }
 
-        if (-not $seenStreaming -and -not $hasStop -and $hasCopy) {
+        if (-not $seenStreaming -and -not $hasStop -and $hasNewReply -and ($hasCopy -or $stableTicks -ge 3)) {
             return [pscustomobject]@{
                 completed = $true
                 seen_streaming = $seenStreaming
@@ -380,6 +580,10 @@ function Wait-ReplyComplete {
 $target = Get-TargetWindow
 $window = $target.Window
 $process = $target.Process
+
+if ($TextFile) {
+    $Text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)
+}
 
 switch ($Action) {
     'inspect-window' {
@@ -503,10 +707,14 @@ switch ($Action) {
         }
 
         $source = 'clipboard'
-        if ([string]::IsNullOrWhiteSpace($after)) {
-            $after = Get-LatestReplyTextFromTail -Window $window
-            if (-not [string]::IsNullOrWhiteSpace($after)) {
+        if ([string]::IsNullOrWhiteSpace($after) -or $before -eq $after) {
+            $tailReply = Get-LatestReplyTextFromTail -Window $window
+            if (-not [string]::IsNullOrWhiteSpace($tailReply)) {
+                $after = $tailReply
                 $source = 'uia-tail-extract'
+            } else {
+                $after = ''
+                $source = 'unavailable'
             }
         }
 
@@ -528,35 +736,52 @@ switch ($Action) {
             throw "Action 'send-round' requires -Text."
         }
 
+        $preTailText = Get-TailText -Tail (Get-Tail -Window $window -TailCount 120)
+        if (($preTailText -match [regex]::Escape($UiStopStreaming)) -or ($preTailText -match [regex]::Escape($UiStopResponse))) {
+            Wait-ReplyComplete -Window $window -Seconds ([Math]::Min($TimeoutSec, 300)) | Out-Null
+            $window = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$process.MainWindowHandle)
+        }
+
         $input = Get-InputElement -Window $window
         if (-not $input) {
             throw "Could not find the ChatGPT input box."
         }
 
+        $replyOpsCountBefore = (Find-ElementsByNameAnyType -Window $window -ElementName $UiReplyOps).Count
         $inputPattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
         $inputPattern.SetValue($Text)
-        Start-Sleep -Milliseconds 250
-
-        $send = Get-LatestButtonByName -Window $window -ButtonName $UiSendButton
-        if (-not $send) {
-            throw "Could not find the latest send button."
-        }
-
-        $sendMode = Invoke-Element -Element $send
         Start-Sleep -Seconds 1
-        $inputAfterSend = Get-InputValue -InputElement $input
-        $fallbackMode = $null
 
-        if ($inputAfterSend -eq $Text) {
-            $fallbackMode = Invoke-ElementNativeClick -Element $send
+        $send = Get-ComposerSubmitButton -Window $window
+        if (-not $send) {
+            $sendMode = Invoke-InputKeyboardSend -InputElement $input
             Start-Sleep -Seconds 1
             $inputAfterSend = Get-InputValue -InputElement $input
+            if ($inputAfterSend -eq $Text) {
+                [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+                Start-Sleep -Seconds 1
+                $inputAfterSend = Get-InputValue -InputElement $input
+                $fallbackMode = 'keyboard-enter'
+            } else {
+                $fallbackMode = $null
+            }
+        } else {
+            $sendMode = Invoke-Element -Element $send
+            Start-Sleep -Seconds 1
+            $inputAfterSend = Get-InputValue -InputElement $input
+            $fallbackMode = $null
+
+            if ($inputAfterSend -eq $Text) {
+                $fallbackMode = Invoke-ElementNativeClick -Element $send
+                Start-Sleep -Seconds 1
+                $inputAfterSend = Get-InputValue -InputElement $input
+            }
         }
 
         $messageSent = ($inputAfterSend -ne $Text)
         $waitResult = $null
         if ($messageSent) {
-            $waitResult = Wait-ReplyComplete -Window $window -Seconds $TimeoutSec
+            $waitResult = Wait-ReplyComplete -Window $window -Seconds $TimeoutSec -MinCopyReplyCount ($replyOpsCountBefore + 1)
         }
 
         New-Result @{
