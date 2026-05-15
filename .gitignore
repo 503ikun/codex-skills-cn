@@ -20,12 +20,15 @@ venv/
 env/
 ENV/
 node_modules/
+target/
 
 # Build and cache output
 dist/
 build/
 .cache/
+*.tmp
+*.bak
 
-# Dynamic WeChat login QR codes
+# Dynamic login and runtime QR codes
 skills/wechat-query/services/wechat-download-api/static/qrcodes/*
 !skills/wechat-query/services/wechat-download-api/static/qrcodes/.gitkeep

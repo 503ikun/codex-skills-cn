@@ -19,7 +19,6 @@ param(
         '数字生命卡兹克',
         '401K-景交所',
         '在公关',
-        '谈资',
         'Sir电影',
         '逛逛GitHub'
     ),
@@ -31,8 +30,9 @@ param(
     [int]$MaxArticles = 0,
     [string]$TitleLike = '*Google Chrome*',
     [int]$ReplyTimeoutSec = 900,
+    [int]$ApiTimeoutSec = 90,
     [string]$NowIso = '',
-    [string[]]$SingleMainArticleAccounts = @('酷玩实验室')
+    [string[]]$SingleMainArticleAccounts = @('酷玩实验室', 'Sir电影', '数据GO')
 )
 
 Set-StrictMode -Version Latest
@@ -40,6 +40,173 @@ $ErrorActionPreference = 'Stop'
 
 $SkillRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $ContinuousDialogueHelper = Join-Path (Split-Path -Parent $SkillRoot) 'continuous-dialogue\scripts\chrome-chatgpt-uia.ps1'
+$PreflightScript = Join-Path $SkillRoot 'scripts\check_service_and_login.ps1'
+$CodexHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) { Join-Path $env:USERPROFILE '.codex' } else { $env:CODEX_HOME }
+$AutomationMemoryPath = Join-Path $CodexHome 'automations\24\memory.md'
+
+if (-not ('CodexTimeoutWebClient' -as [type])) {
+    Add-Type @'
+using System;
+using System.Net;
+
+public class CodexTimeoutWebClient : WebClient {
+    public int TimeoutMilliseconds { get; set; }
+
+    public CodexTimeoutWebClient(int timeoutMilliseconds) {
+        TimeoutMilliseconds = timeoutMilliseconds;
+    }
+
+    protected override WebRequest GetWebRequest(Uri address) {
+        WebRequest request = base.GetWebRequest(address);
+        request.Timeout = TimeoutMilliseconds;
+        HttpWebRequest httpRequest = request as HttpWebRequest;
+        if (httpRequest != null) {
+            httpRequest.ReadWriteTimeout = TimeoutMilliseconds;
+        }
+        return request;
+    }
+}
+'@
+}
+
+function Get-ObjectProperty {
+    param(
+        [object]$Object,
+        [string]$Name,
+        [object]$Default = $null
+    )
+    if ($null -eq $Object) { return $Default }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $Default }
+    $property.Value
+}
+
+function Test-LoginStatusValid {
+    param([object]$Status)
+    if ($null -eq $Status) { return $false }
+    $authenticated = [bool](Get-ObjectProperty -Object $Status -Name 'authenticated' -Default $false)
+    $loginState = [string](Get-ObjectProperty -Object $Status -Name 'loginState' -Default 'unknown')
+    $isExpired = [bool](Get-ObjectProperty -Object $Status -Name 'isExpired' -Default $false)
+    $authenticated -and $loginState -eq 'valid' -and -not $isExpired
+}
+
+function Test-EstimatedExpiredLoginStillWorks {
+    param([object]$Status)
+    if ($null -eq $Status) { return $false }
+    $authenticated = [bool](Get-ObjectProperty -Object $Status -Name 'authenticated' -Default $false)
+    $loginState = [string](Get-ObjectProperty -Object $Status -Name 'loginState' -Default 'unknown')
+    $isExpired = [bool](Get-ObjectProperty -Object $Status -Name 'isExpired' -Default $false)
+    if (-not ($authenticated -and $loginState -eq 'valid' -and $isExpired)) {
+        return $false
+    }
+
+    try {
+        $probe = Invoke-JsonGet -Path '/api/public/searchbiz' -Query @{ query = '赛博禅心' }
+        if (Test-WeChatSessionInvalidResponse -Response $probe) { return $false }
+        return [bool](Get-ObjectProperty -Object $probe -Name 'success' -Default $false)
+    } catch {
+        return $false
+    }
+}
+
+function New-LoginRequiredResult {
+    param(
+        [string]$Reason,
+        [object]$Status = $null
+    )
+    [pscustomobject]@{
+        status = 'login_required'
+        action = 'notify_login_invalid'
+        reason = $Reason
+        message = 'WeChat login is invalid or expired. Please use the official-account administrator WeChat to scan login, then rerun the archive workflow.'
+        authenticated = [bool](Get-ObjectProperty -Object $Status -Name 'authenticated' -Default $false)
+        loginState = [string](Get-ObjectProperty -Object $Status -Name 'loginState' -Default 'unknown')
+        isExpired = [bool](Get-ObjectProperty -Object $Status -Name 'isExpired' -Default $false)
+        lastInvalidReason = [string](Get-ObjectProperty -Object $Status -Name 'lastInvalidReason' -Default '')
+        automation_memory_path = $AutomationMemoryPath
+    }
+}
+
+function Stop-ArchiveForLoginRequired {
+    param(
+        [string]$Reason,
+        [object]$Status = $null
+    )
+    New-LoginRequiredResult -Reason $Reason -Status $Status | ConvertTo-Json -Depth 6
+    exit 0
+}
+
+function Stop-ArchiveForServiceDown {
+    param([string]$Reason)
+    [pscustomobject]@{
+        status = 'service_unavailable'
+        action = 'notify_service_down'
+        reason = $Reason
+        message = 'wechat-query service is unavailable and automatic recovery did not restore it.'
+        automation_memory_path = $AutomationMemoryPath
+    } | ConvertTo-Json -Depth 6
+    exit 1
+}
+
+function Test-WeChatSessionInvalidResponse {
+    param([object]$Response)
+    if ($null -eq $Response) { return $false }
+    $success = Get-ObjectProperty -Object $Response -Name 'success' -Default $null
+    if ($null -ne $success -and [bool]$success) { return $false }
+    $text = try { $Response | ConvertTo-Json -Depth 12 -Compress } catch { [string]$Response }
+    $text -match '(?i)invalid session|session expired|session invalid|not logged in|login required|200003'
+}
+
+function Get-FreshLoginStatus {
+    try {
+        Invoke-JsonGet -Path '/api/admin/status'
+    } catch {
+        $null
+    }
+}
+
+function Assert-ApiResponseNotLoginInvalid {
+    param(
+        [object]$Response,
+        [string]$Endpoint
+    )
+    if (Test-WeChatSessionInvalidResponse -Response $Response) {
+        $status = Get-FreshLoginStatus
+        Stop-ArchiveForLoginRequired -Reason "$Endpoint returned an invalid WeChat session response" -Status $status
+    }
+}
+
+function Invoke-ArchivePreflight {
+    $health = $null
+    try {
+        $health = Invoke-JsonGet -Path '/api/health'
+    } catch {
+        if (Test-Path -LiteralPath $PreflightScript) {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $PreflightScript | Out-Null
+        }
+        try {
+            $health = Invoke-JsonGet -Path '/api/health'
+        } catch {
+            Stop-ArchiveForServiceDown -Reason $_.Exception.Message
+        }
+    }
+
+    $status = $null
+    try {
+        $status = Invoke-JsonGet -Path '/api/admin/status'
+    } catch {
+        Stop-ArchiveForServiceDown -Reason ("admin status endpoint unavailable: {0}" -f $_.Exception.Message)
+    }
+
+    if (-not (Test-LoginStatusValid -Status $status) -and -not (Test-EstimatedExpiredLoginStillWorks -Status $status)) {
+        Stop-ArchiveForLoginRequired -Reason 'preflight admin status is not a usable login' -Status $status
+    }
+
+    [pscustomobject]@{
+        health = $health
+        status = $status
+    }
+}
 
 function Invoke-JsonGet {
     param([string]$Path, [hashtable]$Query = @{})
@@ -50,7 +217,7 @@ function Invoke-JsonGet {
         }
         $builder.Query = ($pairs -join '&')
     }
-    $client = [System.Net.WebClient]::new()
+    $client = [CodexTimeoutWebClient]::new([Math]::Max(1, $ApiTimeoutSec) * 1000)
     $client.Encoding = [System.Text.Encoding]::UTF8
     try {
         $client.DownloadString($builder.Uri.AbsoluteUri) | ConvertFrom-Json
@@ -62,7 +229,7 @@ function Invoke-JsonGet {
 function Invoke-JsonPost {
     param([string]$Path, [object]$Body = $null)
     $uri = $ApiBase.TrimEnd('/') + $Path
-    $client = [System.Net.WebClient]::new()
+    $client = [CodexTimeoutWebClient]::new([Math]::Max(1, $ApiTimeoutSec) * 1000)
     $client.Encoding = [System.Text.Encoding]::UTF8
     $client.Headers[[System.Net.HttpRequestHeader]::ContentType] = 'application/json; charset=utf-8'
     try {
@@ -86,6 +253,7 @@ function Invoke-ArticleFetchWithRetry {
     $last = $null
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $last = Invoke-JsonPost -Path '/api/article/fetch' -Body @{ url = $Url }
+        Assert-ApiResponseNotLoginInvalid -Response $last -Endpoint '/api/article/fetch'
         if ($last.success) { return $last }
 
         $message = [string]$last.error
@@ -110,6 +278,22 @@ function Write-Utf8Text {
     param([string]$Path, [string]$Text)
     $encoding = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($Path, $Text, $encoding)
+}
+
+function Convert-MarkdownHeadingsDown {
+    param([string]$Markdown)
+    if ([string]::IsNullOrEmpty($Markdown)) { return $Markdown }
+
+    $lines = $Markdown -split "`r?`n"
+    $converted = foreach ($line in $lines) {
+        if ($line -match '^(#{1,6})(\s+.*)$') {
+            $level = [Math]::Min(6, $Matches[1].Length + 1)
+            ('#' * $level) + $Matches[2]
+        } else {
+            $line
+        }
+    }
+    $converted -join "`n"
 }
 
 function ConvertTo-BeijingTime {
@@ -155,17 +339,18 @@ function New-MasterPrompt {
         '',
         '目标：',
         '1. 每篇都输出尽量长、结构化、可直接放进 Obsidian 的中文分析。',
-        '2. 每篇都要根据文章具体主题提出针对性问题，不要使用模板化空问题。',
+        '2. 每篇都要参考 2026-05-06 归档样例的提问方式：Targeted questions 必须是围绕本篇具体人物、公司、行业、数据、争议、资产、工具、组织问题写出的具体问题，不要使用模板化空问题。',
         '3. 每篇都要连接到我的个人知识库、正式组织/采购/风控工作、投资判断、AI workflow 和 Obsidian 知识系统。',
         '4. 从第二篇开始主动寻找与前文的呼应、冲突、互证和可建立的双链。',
         '5. 不要只摘要，要拆论点、证据链、隐含前提、弱点、反方观点、可迁移框架。',
         '',
         '统一输出结构：',
+        '- 不要使用一级标题。每篇内部小节从二级标题（##）开始；三级、四级标题可按需使用。',
         '- Suggested theme classification',
         '- Long-form core summary',
         '- Author key claims and evidence chain',
         '- Hidden assumptions / weak points',
-        '- Targeted questions',
+        '- Targeted questions：每篇 20 个左右；问题必须点名本篇的具体对象、变量、案例、数据、风险、反方条件和可验证指标。',
         '- Personal connections',
         '- Cross-article echoes',
         '- Obsidian-ready final note block',
@@ -189,12 +374,14 @@ function New-ArticlePrompt {
 - 发布时间：$($Article.publish_dt)
 - 原文链接：$($Article.link)
 
-请输出尽量长，且按以下结构：
+请输出尽量长，且按以下结构。风格必须参考 2026-05-06 已合格归档中的写法：不是本地模板化摘要，而是深度精读；尤其 Targeted questions 要像那篇一样围绕文章具体内容连续追问。
+重要排版要求：不要在你的回复中使用一级标题（#）。本篇文章标题会由归档脚本统一生成一级标题；你内部的小节必须从二级标题（##）开始。
+
 1. Suggested theme classification：根据本篇内容判断主题，不要套固定分类。
 2. Long-form core summary：长摘要，保留关键细节、转折、作者态度。
 3. Author's key claims and evidence chain：逐条拆主要论点与证据链。
 4. Hidden assumptions / weak points：指出隐含前提、可能夸张、证据不足和反方观点。
-5. Targeted questions：提出至少 10 个针对本篇主题的追问。
+5. Targeted questions：提出 20 个左右针对本篇主题的追问。禁止使用“这篇文章最核心的判断是什么”“作者使用了哪些证据”这类泛泛问题。每个问题都必须点名本篇的具体对象、公司、政策、数据、人物、产品、业务环节、投资变量、组织风险或个人决策场景；问题要能直接进入 Obsidian 作为后续研究问题。
 6. Personal connections：连接我的 Obsidian、AI workflow、正式组织/采购/风控工作、投资/商业判断和个人决策。
 7. Cross-article echoes：如果能和此前文章互相照应，要明确写出连接点。
 8. Obsidian-ready final note block：给出可直接复制到 Obsidian 的 Markdown 块，包含 tags、aliases、links、action checklist。
@@ -220,20 +407,22 @@ function Invoke-ChatGptRound {
     $send = & powershell -NoProfile -ExecutionPolicy Bypass -File $ContinuousDialogueHelper -Action send-round -TitleLike $TitleLike -TextFile $promptFile -TimeoutSec $ReplyTimeoutSec
     $send | Out-File -LiteralPath ($OutFile -replace '\.json$', '.send.json') -Encoding utf8
     $sendData = $send | ConvertFrom-Json
-    if (-not ($sendData.PSObject.Properties.Name -contains 'message_sent') -or -not $sendData.message_sent) {
+    if (-not [bool](Get-ObjectProperty -Object $sendData -Name 'message_sent' -Default $false)) {
         throw "ChatGPT prompt was not sent"
     }
-    if (($sendData.PSObject.Properties.Name -contains 'wait_result') -and $sendData.wait_result -and -not $sendData.wait_result.completed) {
+    $waitResult = Get-ObjectProperty -Object $sendData -Name 'wait_result' -Default $null
+    if ($waitResult -and -not [bool](Get-ObjectProperty -Object $waitResult -Name 'completed' -Default $false)) {
         throw "ChatGPT reply did not complete before timeout"
     }
 
     $copy = & powershell -NoProfile -ExecutionPolicy Bypass -File $ContinuousDialogueHelper -Action copy-latest-reply -TitleLike $TitleLike -TimeoutSec 120
     $copy | Out-File -LiteralPath $OutFile -Encoding utf8
     $data = $copy | ConvertFrom-Json
-    if (-not ($data.PSObject.Properties.Name -contains 'clipboard_text')) {
+    $clipboardText = Get-ObjectProperty -Object $data -Name 'clipboard_text' -Default $null
+    if ($null -eq $clipboardText) {
         throw "copy-latest-reply did not return clipboard_text"
     }
-    $answer = [string]$data.clipboard_text
+    $answer = [string]$clipboardText
     if ([string]::IsNullOrWhiteSpace($answer)) {
         throw "empty ChatGPT reply"
     }
@@ -287,17 +476,13 @@ if ([string]::IsNullOrWhiteSpace($NowIso)) {
 }
 $cutoff = $now.AddHours(-1 * $HoursBack)
 
-$health = Invoke-JsonGet -Path '/api/health'
-$status = Invoke-JsonGet -Path '/api/admin/status'
-if (-not $status.authenticated -or $status.loginState -ne 'valid') {
-    Write-Output ("Wechat login is not valid. authenticated={0}, loginState={1}. Please scan login before archive run." -f $status.authenticated, $status.loginState)
-    exit 2
-}
+$preflight = Invoke-ArchivePreflight
 
 $matches = @()
 $candidates = @()
 foreach ($name in $Accounts) {
     $search = Invoke-JsonGet -Path '/api/public/searchbiz' -Query @{ query = $name }
+    Assert-ApiResponseNotLoginInvalid -Response $search -Endpoint '/api/public/searchbiz'
     $candidate = Get-FirstAccountCandidate -SearchResponse $search
     if (-not $candidate) {
         $matches += [pscustomobject]@{ query = $name; found = $false; nickname = ''; alias = ''; fakeid = ''; error = $search.error }
@@ -305,6 +490,7 @@ foreach ($name in $Accounts) {
     }
     $matches += [pscustomobject]@{ query = $name; found = $true; nickname = $candidate.nickname; alias = $candidate.alias; fakeid = $candidate.fakeid; error = '' }
     $listResponse = Invoke-JsonGet -Path '/api/public/articles' -Query @{ fakeid = $candidate.fakeid; begin = 0; count = 10 }
+    Assert-ApiResponseNotLoginInvalid -Response $listResponse -Endpoint '/api/public/articles'
     $accountItems = @()
     foreach ($item in (Get-ArticleItems -ArticlesResponse $listResponse)) {
         $publish = ConvertTo-BeijingTime -UnixSeconds ([long]($item.create_time))
@@ -470,7 +656,7 @@ foreach ($row in $rows) {
 
 foreach ($group in $themeGroups.Values) {
     $parts = @(
-        "# $($group.Title)",
+        "> 主题：$($group.Title)",
         "> 日期：$($now.ToString('yyyy-MM-dd'))  ",
         "> 范围：最近 $HoursBack 小时公众号文章  ",
         "> 归档版本：v2，同一个非临时 ChatGPT 长对话；失败篇默认跳过并写入运行摘要。",
@@ -481,14 +667,14 @@ foreach ($group in $themeGroups.Values) {
         $parts += ''
         $parts += '---'
         $parts += ''
-        $parts += "## {0:00}. {1}" -f $row.article_index, $row.title
+        $parts += "# 第 {0:00} 篇精读｜{1}" -f $row.article_index, $row.title
         $parts += ''
         $parts += "- 公众号：$($row.account)"
         $parts += "- 发布时间：$($row.publish_dt)"
         $parts += "- 原文链接：$($row.url)"
         $parts += "- 来源：$($row.source)"
         $parts += ''
-        $parts += $row.answer
+        $parts += (Convert-MarkdownHeadingsDown -Markdown ([string]$row.answer))
     }
     Write-Utf8BomText -Path (Join-Path $dateFolder $group.File) -Text ($parts -join "`n")
 }

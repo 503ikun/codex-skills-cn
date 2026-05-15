@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('inspect-window','verify-chatgpt-surface','read-tail','set-input','invoke-button','wait-reply-complete','copy-latest-reply','send-round')]
+    [ValidateSet('inspect-window','verify-chatgpt-surface','read-tail','set-input','invoke-button','wait-reply-complete','copy-latest-reply','count-reply-buttons','copy-reply-by-index','send-round')]
     [string]$Action,
 
     [string]$TitleLike = '*Google Chrome*',
@@ -28,8 +28,14 @@ public class CodexUser32 {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   public const uint LEFTDOWN = 0x0002;
   public const uint LEFTUP = 0x0004;
+  public const uint KEYUP = 0x0002;
+  public const byte VK_CONTROL = 0x11;
+  public const byte VK_RETURN = 0x0D;
+  public const byte VK_A = 0x41;
+  public const byte VK_V = 0x56;
 }
 '@
 
@@ -394,9 +400,113 @@ function Invoke-InputKeyboardSend {
         Start-Sleep -Milliseconds 200
     } catch {
     }
-    [System.Windows.Forms.SendKeys]::SendWait('^{ENTER}')
+    try {
+        [System.Windows.Forms.SendKeys]::SendWait('^{ENTER}')
+    } catch {
+        [CodexUser32]::keybd_event([CodexUser32]::VK_CONTROL, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 40
+        [CodexUser32]::keybd_event([CodexUser32]::VK_RETURN, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
+        [CodexUser32]::keybd_event([CodexUser32]::VK_RETURN, 0, [CodexUser32]::KEYUP, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 40
+        [CodexUser32]::keybd_event([CodexUser32]::VK_CONTROL, 0, [CodexUser32]::KEYUP, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 1
+        return 'native-keyboard-ctrl-enter'
+    }
     Start-Sleep -Seconds 1
     'keyboard-ctrl-enter'
+}
+
+function Invoke-NativeKeyChord {
+    param(
+        [byte]$Key,
+        [string]$ModeName
+    )
+    [CodexUser32]::keybd_event([CodexUser32]::VK_CONTROL, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 40
+    [CodexUser32]::keybd_event($Key, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 70
+    [CodexUser32]::keybd_event($Key, 0, [CodexUser32]::KEYUP, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 40
+    [CodexUser32]::keybd_event([CodexUser32]::VK_CONTROL, 0, [CodexUser32]::KEYUP, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 200
+    $ModeName
+}
+
+function Set-ClipboardText {
+    param([string]$Value)
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            Set-Clipboard -Value $Value -ErrorAction Stop
+            return ('set-clipboard-attempt-{0}' -f $attempt)
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+
+        try {
+            [System.Windows.Forms.Clipboard]::Clear()
+            [System.Windows.Forms.Clipboard]::SetText($Value)
+            return ('forms-clipboard-attempt-{0}' -f $attempt)
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+
+        Start-Sleep -Milliseconds (150 * $attempt)
+    }
+    throw "Could not set clipboard text for browser paste after retries: $lastError"
+}
+
+function Invoke-InputClipboardPaste {
+    param(
+        $InputElement,
+        [string]$Value
+    )
+
+    try {
+        $InputElement.SetFocus()
+        Start-Sleep -Milliseconds 250
+    } catch {
+    }
+    try {
+        Invoke-ElementNativeClick -Element $InputElement | Out-Null
+        Start-Sleep -Milliseconds 250
+    } catch {
+    }
+
+    try {
+        $pattern = $InputElement.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $pattern.SetValue($Value)
+        Start-Sleep -Milliseconds 350
+        $afterSet = Get-InputValue -InputElement $InputElement
+        if (Test-InputLooksLikeText -InputValue $afterSet -ExpectedText $Value) {
+            return 'value-pattern'
+        }
+    } catch {
+    }
+
+    $clipboardMode = Set-ClipboardText -Value $Value
+    Invoke-NativeKeyChord -Key ([CodexUser32]::VK_A) -ModeName 'native-keyboard-ctrl-a' | Out-Null
+    Invoke-NativeKeyChord -Key ([CodexUser32]::VK_V) -ModeName 'native-keyboard-ctrl-v' | Out-Null
+    Start-Sleep -Seconds 1
+    "clipboard-paste:$clipboardMode"
+}
+
+function Test-InputLooksLikeText {
+    param(
+        [string]$InputValue,
+        [string]$ExpectedText
+    )
+    if ([string]::IsNullOrWhiteSpace($InputValue) -or [string]::IsNullOrWhiteSpace($ExpectedText)) {
+        return $false
+    }
+    $inputNorm = ($InputValue -replace "`r`n", "`n").Trim()
+    $expectedNorm = ($ExpectedText -replace "`r`n", "`n").Trim()
+    if ($inputNorm -eq $expectedNorm) { return $true }
+    $prefixLen = [Math]::Min(160, $expectedNorm.Length)
+    if ($prefixLen -le 0) { return $false }
+    $prefix = $expectedNorm.Substring(0, $prefixLen)
+    return ($inputNorm.Contains($prefix) -and $inputNorm.Length -ge [Math]::Min(200, [int]($expectedNorm.Length * 0.65)))
 }
 
 function Get-Tail {
@@ -548,7 +658,8 @@ function Wait-ReplyComplete {
         $copyCount = (Find-ElementsByNameAndType -Window $Window -ElementName $UiCopyReply -ControlType ([System.Windows.Automation.ControlType]::Button)).Count
         $copyAnyCount = (Find-ElementsByNameAnyType -Window $Window -ElementName $UiCopyReply).Count
         $hasNewReply = $replyOpsCount -ge $MinCopyReplyCount
-        $hasCopy = $hasNewReply -and (($copyCount -gt 0) -or ($copyAnyCount -gt 0) -or ($tailText -match [regex]::Escape($UiCopyReply)))
+        $hasAnyCopy = (($copyCount -gt 0) -or ($copyAnyCount -gt 0) -or ($tailText -match [regex]::Escape($UiCopyReply)))
+        $hasCopy = $hasNewReply -and $hasAnyCopy
         if ($hasStop) { $seenStreaming = $true }
 
         if ($seenStreaming -and -not $hasStop -and ($hasCopy -or $stableTicks -ge 3)) {
@@ -567,6 +678,15 @@ function Wait-ReplyComplete {
             }
         }
 
+        if (-not $hasStop -and $hasAnyCopy -and $stableTicks -ge 5) {
+            return [pscustomobject]@{
+                completed = $true
+                seen_streaming = $seenStreaming
+                relaxed_completion = $true
+                tail_text = $lastTail
+            }
+        }
+
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
 
@@ -580,6 +700,8 @@ function Wait-ReplyComplete {
 $target = Get-TargetWindow
 $window = $target.Window
 $process = $target.Process
+[CodexUser32]::SetForegroundWindow([IntPtr]$process.MainWindowHandle) | Out-Null
+Start-Sleep -Milliseconds 300
 
 if ($TextFile) {
     $Text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)
@@ -731,6 +853,63 @@ switch ($Action) {
         break
     }
 
+    'count-reply-buttons' {
+        $buttons = Find-ElementsByNameAndType -Window $window -ElementName $UiCopyReply -ControlType ([System.Windows.Automation.ControlType]::Button)
+        $items = @()
+        for ($i = 0; $i -lt $buttons.Count; $i++) {
+            $items += [pscustomobject]@{
+                index = $i + 1
+                element = Get-ElementInfo -Element $buttons.Item($i)
+            }
+        }
+
+        New-Result @{
+            action = $Action
+            matched_title = $process.MainWindowTitle
+            process_id = $process.Id
+            count = $buttons.Count
+            buttons = $items
+        }
+        break
+    }
+
+    'copy-reply-by-index' {
+        if ($Count -lt 1) {
+            throw "Action 'copy-reply-by-index' requires -Count as a 1-based reply index."
+        }
+
+        $buttons = Find-ElementsByNameAndType -Window $window -ElementName $UiCopyReply -ControlType ([System.Windows.Automation.ControlType]::Button)
+        if ($buttons.Count -lt $Count) {
+            throw "Could not find copy-reply button index $Count. Found $($buttons.Count)."
+        }
+
+        $button = $buttons.Item($Count - 1)
+        $before = Get-ClipboardText
+        $mode = Invoke-Element -Element $button
+        Start-Sleep -Milliseconds 700
+        $after = Get-ClipboardText
+        $fallbackMode = $null
+
+        if ([string]::IsNullOrWhiteSpace($after) -or $before -eq $after) {
+            $fallbackMode = Invoke-ElementNativeClick -Element $button
+            Start-Sleep -Milliseconds 900
+            $after = Get-ClipboardText
+        }
+
+        New-Result @{
+            action = $Action
+            matched_title = $process.MainWindowTitle
+            process_id = $process.Id
+            index = $Count
+            total = $buttons.Count
+            invoke_mode = $mode
+            fallback_mode = $fallbackMode
+            clipboard_changed = ($before -ne $after)
+            clipboard_text = $after
+        }
+        break
+    }
+
     'send-round' {
         if ([string]::IsNullOrEmpty($Text)) {
             throw "Action 'send-round' requires -Text."
@@ -748,20 +927,43 @@ switch ($Action) {
         }
 
         $replyOpsCountBefore = (Find-ElementsByNameAnyType -Window $window -ElementName $UiReplyOps).Count
-        $inputPattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-        $inputPattern.SetValue($Text)
-        Start-Sleep -Seconds 1
+        $inputMode = Invoke-InputClipboardPaste -InputElement $input -Value $Text
+        $inputAfterPaste = Get-InputValue -InputElement $input
+        $pasteSucceeded = Test-InputLooksLikeText -InputValue $inputAfterPaste -ExpectedText $Text
+        if (-not $pasteSucceeded) {
+            New-Result @{
+                action = $Action
+                matched_title = $process.MainWindowTitle
+                process_id = $process.Id
+                input_mode = $inputMode
+                send_mode = $null
+                fallback_mode = $null
+                message_sent = $false
+                input_after_paste = $inputAfterPaste
+                input_after_send = $inputAfterPaste
+                wait_result = $null
+                error = 'input paste did not populate the ChatGPT composer'
+            }
+            break
+        }
 
         $send = Get-ComposerSubmitButton -Window $window
         if (-not $send) {
             $sendMode = Invoke-InputKeyboardSend -InputElement $input
             Start-Sleep -Seconds 1
             $inputAfterSend = Get-InputValue -InputElement $input
-            if ($inputAfterSend -eq $Text) {
-                [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+            if (Test-InputLooksLikeText -InputValue $inputAfterSend -ExpectedText $Text) {
+                try {
+                    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+                    $fallbackMode = 'keyboard-enter'
+                } catch {
+                    [CodexUser32]::keybd_event([CodexUser32]::VK_RETURN, 0, 0, [UIntPtr]::Zero)
+                    Start-Sleep -Milliseconds 60
+                    [CodexUser32]::keybd_event([CodexUser32]::VK_RETURN, 0, [CodexUser32]::KEYUP, [UIntPtr]::Zero)
+                    $fallbackMode = 'native-keyboard-enter'
+                }
                 Start-Sleep -Seconds 1
                 $inputAfterSend = Get-InputValue -InputElement $input
-                $fallbackMode = 'keyboard-enter'
             } else {
                 $fallbackMode = $null
             }
@@ -771,14 +973,14 @@ switch ($Action) {
             $inputAfterSend = Get-InputValue -InputElement $input
             $fallbackMode = $null
 
-            if ($inputAfterSend -eq $Text) {
+            if (Test-InputLooksLikeText -InputValue $inputAfterSend -ExpectedText $Text) {
                 $fallbackMode = Invoke-ElementNativeClick -Element $send
                 Start-Sleep -Seconds 1
                 $inputAfterSend = Get-InputValue -InputElement $input
             }
         }
 
-        $messageSent = ($inputAfterSend -ne $Text)
+        $messageSent = (-not (Test-InputLooksLikeText -InputValue $inputAfterSend -ExpectedText $Text))
         $waitResult = $null
         if ($messageSent) {
             $waitResult = Wait-ReplyComplete -Window $window -Seconds $TimeoutSec -MinCopyReplyCount ($replyOpsCountBefore + 1)
@@ -788,9 +990,11 @@ switch ($Action) {
             action = $Action
             matched_title = $process.MainWindowTitle
             process_id = $process.Id
+            input_mode = $inputMode
             send_mode = $sendMode
             fallback_mode = $fallbackMode
             message_sent = $messageSent
+            input_after_paste = $inputAfterPaste
             input_after_send = $inputAfterSend
             wait_result = $waitResult
         }

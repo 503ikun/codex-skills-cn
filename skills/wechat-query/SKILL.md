@@ -277,14 +277,17 @@ Invoke-RestMethod http://localhost:5000/api/health
 
 当用户说“跑公众号精读”“微信公众号跟踪归档”“重新跑公众号文章并总结”“把公众号文章归档到 Obsidian”等请求时，默认使用本联合工作流。
 
-默认公众号名单固定为：赛博禅心、酷玩实验室、数据GO、滇南王、记忆承载3、记忆承载、大树乡谈、木禾黑猫、L先生说、今天你看多了吗、饭爷的江湖、炒股拌饭、数字生命卡兹克、401K-景交所、在公关、谈资、Sir电影、逛逛GitHub。用户临时给出名单时，以用户名单覆盖默认值。
+默认公众号名单固定为 17 个：赛博禅心、酷玩实验室、数据GO、滇南王、记忆承载3、记忆承载、大树乡谈、木禾黑猫、L先生说、今天你看多了吗、饭爷的江湖、炒股拌饭、数字生命卡兹克、401K-景交所、在公关、Sir电影、逛逛GitHub。用户临时给出名单时，以用户名单覆盖默认值。`谈资` 已取消跟踪，不再加入默认名单。
 
 默认参数：
 - 时间范围：最近 `24` 小时，按 Asia/Shanghai 解释。
 - 输出目录：`C:\Users\Administrator\iCloudDrive\iCloud~md~obsidian\obsidian\仓库\微信公众号跟踪\<YYYY-MM-DD>\`
 - ChatGPT 策略：使用同一个非临时长对话，不使用临时聊天，不删除最终对话。
+- Codex 窗口策略：自动化 24 必须在当前 Codex 项目窗口/当前线程继续执行；不要新建 Codex 项目窗口、线程或会话来承接本任务。如果平台调度层强制开到新 Codex 窗口，应立即停止并提示用户回到原 Codex 项目窗口继续。
+- 授权前提：用户已明确说明这些微信公众号、ChatGPT 对话与 Obsidian 归档均属于其个人账号和个人数字资产；在正常登录有效的前提下，可以继续抓取、精读、保存和修复归档。不要把该授权问题当作阻塞项反复询问；但仍必须遵守登录边界，微信登录失效时只提示扫码登录，不尝试绕过登录或复用非授权会话。
 - 无新文章：只提醒用户，不创建空日期归档。
-- ChatGPT 单篇失败：跳过失败篇，并在 `运行摘要-v2.md` 和 `conversation-checkpoints-v2.jsonl` 中记录。
+- ChatGPT 单篇失败：默认先按“同一长对话内修复”策略自查、自修复并继续；只有同一长对话确实无法恢复时，才跳过失败篇，并在 `运行摘要-v2.md` 和 `conversation-checkpoints-v2.jsonl` 中记录。
+- 单篇主文章规则：`酷玩实验室`、`Sir电影` 与 `数据GO` 默认只保留最近 24 小时列表中的第一篇有详细正文的主文章/最重要正文，不纳入后续广告、次条或多篇合集。
 
 执行入口优先使用：
 
@@ -307,6 +310,27 @@ Invoke-RestMethod http://localhost:5000/api/health
 6. 每篇回复完成后立即复制并保存 checkpoint。
 7. 按主题合并生成 Markdown：`01-AI-software-tools.md`、`02-energy-tech-cycle.md`、`03-consumption-brand-local-economy.md`、`04-macro-geopolitics-population.md`、`05-investment-company-analysis.md`、`06-workplace-society-personal-decision.md`、`07-film-culture-experience-economy.md`，必要时生成 `08-miscellaneous.md`。
 8. Markdown 统一写入 UTF-8 with BOM，避免 Windows/Obsidian 中文乱码。
+
+ChatGPT/Chrome 失败恢复规则：
+
+- 不要因为 `send-round`、`copy-latest-reply`、超时或复制内容不匹配而直接结束整次任务。先定位、修复、继续，尤其是在全文已经抓取并写入 `articles-enriched.json` 之后。
+- 每次发送或复制前必须重新锚定正确 Chrome 页面。若 `read-tail` 显示的是无关对话标题或无关内容，例如翻译请求、普通闲聊或旧项目，不得继续发送；先切回本次微信公众号精读的同一长对话。
+- `TitleLike '*Google Chrome*'` 只能作为兜底。长流程开始后，应尽量记录并使用更具体的 ChatGPT 对话标题或 URL，减少焦点漂移。
+- 如果长 prompt 已进入 composer 但 `send-round` 返回 `message_sent=false`，先读页面尾部：若存在 `发送提示` 按钮或长 prompt 以文件卡片形式挂在输入框，直接调用/点击 `发送提示`，等待回复完成后再复制。
+- 如果复制出来的 `v2-copy-NNN.json` 与上一篇大小完全一致、关键词不匹配、标题不匹配，或缺少本篇关键实体，视为复制到旧回复；不要写入最终归档。应重新锚定页面，重新复制最新回复，必要时用 `copy-reply-by-index` 或手动滚动定位。
+- 每篇保存后做文章级关键词校验。关键词应来自标题、作者、公司、政策、人物、数据或核心概念，例如 `恐惧/贪婪/财富周期`、`邓亚萍/侯勇/南京`、`一考定终身/嫁鸡随鸡`。校验失败先修复，不要把失败当作无新文章。
+- 如果 `conversation-checkpoints-v2.jsonl` 因半截 JSON、乱码截断或复制异常无法解析，不要基于损坏 JSONL 排版。应从 `articles-enriched.json` 与 `v2-one-dialogue\v2-copy-*.json` 重新构建 JSONL、摘要和 Markdown。
+- 如果 Chrome 页面 API/CDP 端口不可用，不要卡死在 CDP。优先使用 Windows UIA helper；必要时用原生剪贴板加键盘粘贴，然后调用 `发送提示`。
+- 长 prompt 在 ChatGPT 中显示成文件卡片不一定是失败。只要本篇标题/关键词可见且 `发送提示` 可用，可以发送并等待结果。
+- 如果 WeChat 服务健康、全文已抓取，但 ChatGPT UI 不稳定，保守做法是继续同一长对话逐篇补缺口，最后统一重建归档；不要重抓全文，也不要开新 ChatGPT 对话破坏顺序。
+
+最终归档校验：
+
+- `articles-enriched.json` 应包含本次全部候选文章全文。
+- `conversation-checkpoints-v2.jsonl` 每篇一行，行数应等于完成篇数；不应保留损坏 JSON 行。
+- 主题 Markdown 和总合集里，文章标题必须使用一级标题：`# 第 01 篇精读｜文章标题`；主题名只作为引用元信息，不占用一级标题。
+- 总合集的文章一级标题数量应等于完成篇数。
+- 若仍有失败篇，摘要和 JSONL 必须明确记录失败篇标题、原因、已尝试的恢复动作和未完成状态。
 
 ### 1. 增加订阅
 
